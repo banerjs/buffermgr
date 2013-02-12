@@ -115,6 +115,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 	Latch	   *bgwriterLatch;
 	int			trycounter;
 
+        // Force the usage of CLOCK. There should be no memory leaks with this
+        // method. strategy is passed by value.
+        strategy = NULL;
+
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
 	 * assume strategy objects don't need the BufFreelistLock.
