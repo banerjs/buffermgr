@@ -50,6 +50,9 @@
 #include "utils/timestamp.h"
 
 
+//DEBUG define
+#define ERRCODE_DEBUG 255
+
 /* Note: these two macros only work on shared buffers, not local ones! */
 #define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
 #define BufferGetLSN(bufHdr)	(PageGetLSN(BufHdrGetBlock(bufHdr)))
@@ -1104,6 +1107,12 @@ PinBuffer(volatile BufferDesc *buf, BufferAccessStrategy strategy)
 	}
 	PrivateRefCount[b]++;
 	Assert(PrivateRefCount[b] > 0);
+
+        //fprintf(stderr, "Going through PinBuffer\n");
+        LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
+        LRUMarkUsed(buf);
+        LWLockRelease(BufFreelistLock);
+
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
 								BufferDescriptorGetBuffer(buf));
 	return result;
@@ -1132,6 +1141,10 @@ PinBuffer_Locked(volatile BufferDesc *buf)
 	UnlockBufHdr(buf);
 	PrivateRefCount[b]++;
 	Assert(PrivateRefCount[b] > 0);
+
+        //fprintf(stderr, "Going through PinBuffer_Locked\n");
+        LRUMarkUsed(buf);
+
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
 								BufferDescriptorGetBuffer(buf));
 }
