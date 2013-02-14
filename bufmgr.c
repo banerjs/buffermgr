@@ -1107,12 +1107,6 @@ PinBuffer(volatile BufferDesc *buf, BufferAccessStrategy strategy)
 	}
 	PrivateRefCount[b]++;
 	Assert(PrivateRefCount[b] > 0);
-
-        //fprintf(stderr, "Going through PinBuffer\n");
-        LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
-        LRUMarkUsed(buf);
-        LWLockRelease(BufFreelistLock);
-
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
 								BufferDescriptorGetBuffer(buf));
 	return result;
@@ -1141,10 +1135,6 @@ PinBuffer_Locked(volatile BufferDesc *buf)
 	UnlockBufHdr(buf);
 	PrivateRefCount[b]++;
 	Assert(PrivateRefCount[b] > 0);
-
-        //fprintf(stderr, "Going through PinBuffer_Locked\n");
-        LRUMarkUsed(buf);
-
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
 								BufferDescriptorGetBuffer(buf));
 }
@@ -1194,6 +1184,9 @@ UnpinBuffer(volatile BufferDesc *buf, bool fixOwner)
 		else
 			UnlockBufHdr(buf);
 	}
+
+        /* Buffer has just finished being used. Mark as recently used */
+        StrategyFreeBuffer(buf);
 }
 
 /*
@@ -1423,6 +1416,8 @@ BgBufferSync(void)
 
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
 		strategy_delta += (long) passes_delta *NBuffers;
+                /* Set strategy_delta to 0 to prevent weird errors */
+                strategy_delta = 0;
 
 		Assert(strategy_delta >= 0);
 

@@ -123,8 +123,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 	/* Nope, so lock the freelist */
 	*lock_held = true;
 	LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
-        /* fprintf(stderr, "\nGetBuffer: StrategyControl - %d, %d\n", StrategyControl->firstFreeBuffer, */
-        /*         StrategyControl->lastFreeBuffer); */
 
 	/*
 	 * We count buffer allocation requests so that the bgwriter can estimate
@@ -169,10 +167,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
             last = buf;
             buf = &BufferDescriptors[buf->freeNext];
         }
-        //fprintf(stderr, "Found a buffer to use: %d, %d, %d\n", buf->freePrev, buf->buf_id, buf->freeNext);
-        ereport(LOG,
-                (errcode(ERRCODE_DEBUG),
-                 errmsg("Found a buffer to use: %d", buf->buf_id)));
 
         /* Set this buffer as the most recently used */
         if (last == NULL)
@@ -189,9 +183,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
         StrategyControl->lastFreeBuffer = buf->buf_id;
         StrategyControl->nextVictimBuffer = StrategyControl->firstFreeBuffer;
 
-        /* fprintf(stderr, "GetBuffer: StrategyControl - %d, %d\n", StrategyControl->firstFreeBuffer, */
-        /*         StrategyControl->lastFreeBuffer); */
-
         /* Return the buffer */
         return buf;
 }
@@ -202,7 +193,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 void
 StrategyFreeBuffer(volatile BufferDesc *buf)
 {
-    //fprintf(stderr, "Going through StrategyFreeBuffer\n");
     LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
     LRUMarkUsed(buf);
     LWLockRelease(BufFreelistLock);
@@ -217,13 +207,15 @@ LRUMarkUsed(volatile BufferDesc *buf)
 {
     volatile BufferDesc *prev = NULL;
     volatile BufferDesc *next = NULL;
-    /* fprintf(stderr, "\nLRUMarkUsed: StrategyControl - %d, %d\n", StrategyControl->firstFreeBuffer, */
-    /*         StrategyControl->lastFreeBuffer); */
-    
-    /* fprintf(stderr, "Marking this buffer as Recently Used: %d, %d, %d\n", buf->freePrev, buf->buf_id, buf->freeNext); */
-    ereport(LOG,
-            (errcode(ERRCODE_DEBUG),
-             errmsg("Marking this buffer as Recently Used: %d", buf->buf_id)));
+
+    /* Check if pin count = 0 */
+    LockBufHdr(buf);
+    if (buf->refcount != 0)
+    {
+        UnlockBufHdr(buf);
+        return;
+    }
+    UnlockBufHdr(buf);
     
     /* 
      * Fix old links to remove buf. Always assuming that there is more than 1
@@ -245,10 +237,6 @@ LRUMarkUsed(volatile BufferDesc *buf)
     }
     else /* buf->freeNext == FREENEXT_END_OF_LIST */
     {
-        /* fprintf(stderr, "Marked this buffer as Recently Used: %d, %d, %d\n", buf->freePrev, buf->buf_id, buf->freeNext); */
-        /* fprintf(stderr, "LRUMarkUsed: StrategyControl - %d, %d\n", StrategyControl->firstFreeBuffer, */
-        /*         StrategyControl->lastFreeBuffer); */
-        /* fprintf(stderr, "Exiting LRUMarkUsed (Special Case)\n\n"); */
         return;
     }
 
@@ -258,11 +246,6 @@ LRUMarkUsed(volatile BufferDesc *buf)
     buf->freePrev = prev->buf_id;
 
     StrategyControl->lastFreeBuffer = buf->buf_id;
-
-    //fprintf(stderr, "Marked this buffer as Recently Used: %d, %d, %d\n", buf->freePrev, buf->buf_id, buf->freeNext);
-    //fprintf(stderr, "LRUMarkUsed: StrategyControl - %d, %d\n", StrategyControl->firstFreeBuffer,
-    //        StrategyControl->lastFreeBuffer);
-    //fprintf(stderr, "Exiting LRUMarkUsed\n\n");
 }
 
 /*
