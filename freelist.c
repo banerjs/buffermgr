@@ -29,6 +29,9 @@ typedef struct
 	/* Clock sweep hand: index of next buffer to consider grabbing */
 	int			nextVictimBuffer;
 
+        /* Keep track of Free Buffers */
+        int freeBuffers;
+
 	int			firstFreeBuffer;	/* Head of list of unused buffers */
 	int			lastFreeBuffer; /* Tail of list of unused buffers */
 
@@ -147,18 +150,51 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 		LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
 	}
 
+        /* Check for Free Buffers */
+        if (StrategyControl->freeBuffers != FREENEXT_END_OF_LIST)
+        {
+            buf = &BufferDescriptors[StrategyControl->freeBuffers];
+            for (;;)
+            {
+                LockBufHdr(buf);
+                if (buf->refcount == 0)
+                {
+                    //fprintf(stderr, "FREE buffer number %d - %d - %d...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
+                    /* ereport(LOG, */
+                    /* 	      (errcode(BUFF_FOUND), */
+                    /* 	       errmsg("You have found a buffer number %d - %d - %d...", buf->freePrevious, buf->buf_id, buf->freeNext)));	       */
+                    UnlockBufHdr(buf);
+                    StrategyControl->freeBuffers = buf->freeNext;
+                    return buf;
+                }
+                UnlockBufHdr(buf);
+                if(buf->freeNext == FREENEXT_END_OF_LIST){
+                    /*
+                     * We've scanned all the buffers without making any state changes,
+                     * so all the buffers are pinned (or were when we looked at them).
+                     * We could hope that someone will free one eventually, but it's
+                     * probably better to fail than to risk getting stuck in an
+                     * infinite loop.
+                     */
+                    break;
+                }
+                buf = &BufferDescriptors[buf->freeNext];
+            }
+        }
+
+        /* All free buffers have been used up */
 	buf = &BufferDescriptors[StrategyControl->firstFreeBuffer];
 	for (;;){
 	  LockBufHdr(buf);
 	  if (buf->refcount == 0)
-	    {
-	      fprintf(stderr, "You have found a buffer number %d - %d - %d...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
+          {
+	      //fprintf(stderr, "You have found a buffer number %d - %d - %d...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
 	      /* ereport(LOG, */
 	      /* 	      (errcode(BUFF_FOUND), */
 	      /* 	       errmsg("You have found a buffer number %d - %d - %d...", buf->freePrevious, buf->buf_id, buf->freeNext)));	       */
 	      UnlockBufHdr(buf);
-	      return buf;
-	    }
+              return buf;
+          }
 	  UnlockBufHdr(buf);
 	  if(buf->freeNext == FREENEXT_END_OF_LIST){
 	    /*
@@ -172,7 +208,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 	  }
 	  buf = &BufferDescriptors[buf->freeNext];
 	}
-
+        
 	/* not reached */
 	return NULL;
 }
@@ -194,7 +230,7 @@ StrategyFreeBuffer(volatile BufferDesc *buf)
 
 	//if last pin removed
 	if (buf->refcount == 0){
-	  fprintf(stderr, "Marking %d - %d - %d as MRU buf...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
+            //fprintf(stderr, "Marking %d - %d - %d as MRU buf...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
 	      /* ereport(LOG, */
 	      /* 	      (errcode(BUFF_FOUND), */
 	      /* 	       errmsg("Marking %d - %d - %d as MRU buf...", buf->freePrevious, buf->buf_id, buf->freeNext)));	       */
@@ -353,6 +389,7 @@ StrategyInitialize(bool init)
 		 */
 		StrategyControl->firstFreeBuffer = 0;
 		StrategyControl->lastFreeBuffer = NBuffers - 1;
+                StrategyControl->freeBuffers = 0;
 
 		/* Initialize the clock sweep pointer */
 		StrategyControl->nextVictimBuffer = 0;
