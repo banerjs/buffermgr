@@ -124,7 +124,7 @@ InitBufferPool(void)
 
 		/* Correct last entry of linked list */
 		BufferDescriptors[NBuffers - 1].freeNext = FREENEXT_END_OF_LIST;
-                BufferDescriptors[NBuffers - 1].freePrev = FREENEXT_END_OF_LIST;
+                BufferDescriptors[0].freePrev = FREENEXT_END_OF_LIST;
 	}
 
 	/* Init other shared buffer-management stuff */
