@@ -1181,6 +1181,9 @@ UnpinBuffer(volatile BufferDesc *buf, bool fixOwner)
 		else
 			UnlockBufHdr(buf);
 	}
+
+	//------------------MRH2
+	StrategyFreeBuffer(buf);
 }
 
 /*
@@ -1410,6 +1413,9 @@ BgBufferSync(void)
 
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
 		strategy_delta += (long) passes_delta *NBuffers;
+
+		/* strategy_delta hack */
+		strategy_delta = 0;
 
 		Assert(strategy_delta >= 0);
 

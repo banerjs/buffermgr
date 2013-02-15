@@ -18,6 +18,8 @@
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 
+#define BUFF_FOUND 0
+
 
 /*
  * The shared freelist control information.
@@ -56,7 +58,7 @@ static BufferStrategyControl *StrategyControl = NULL;
  * This is currently the only kind of BufferAccessStrategy object, but someday
  * we might have more kinds.
  */
-typedef struct BufferAccessStrategyData
+typedef struct BufferAccessStrategyData  // Ring
 {
 	/* Overall strategy type */
 	BufferAccessStrategyType btype;
@@ -113,27 +115,13 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 {
 	volatile BufferDesc *buf;
 	Latch	   *bgwriterLatch;
-	int			trycounter;
 
-        // Force the usage of CLOCK. There should be no memory leaks with this
-        // method. strategy is passed by value.
-        strategy = NULL;
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        // Set strategy to NULL to disable advanced buffer ring in CLOCK [[ MRH 2/13 ]]
+	strategy = NULL;
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-	/*
-	 * If given a strategy object, see whether it can select a buffer. We
-	 * assume strategy objects don't need the BufFreelistLock.
-	 */
-	if (strategy != NULL)
-	{
-		buf = GetBufferFromRing(strategy);
-		if (buf != NULL)
-		{
-			*lock_held = false;
-			return buf;
-		}
-	}
-
-	/* Nope, so lock the freelist */
+	/* lock the freelist */
 	*lock_held = true;
 	LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
 
@@ -159,109 +147,91 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 		LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
 	}
 
-	/*
-	 * Try to get a buffer from the freelist.  Note that the freeNext fields
-	 * are considered to be protected by the BufFreelistLock not the
-	 * individual buffer spinlocks, so it's OK to manipulate them without
-	 * holding the spinlock.
-	 */
-	while (StrategyControl->firstFreeBuffer >= 0)
-	{
-		buf = &BufferDescriptors[StrategyControl->firstFreeBuffer];
-		Assert(buf->freeNext != FREENEXT_NOT_IN_LIST);
-
-		/* Unconditionally remove buffer from freelist */
-		StrategyControl->firstFreeBuffer = buf->freeNext;
-		buf->freeNext = FREENEXT_NOT_IN_LIST;
-
-		/*
-		 * If the buffer is pinned or has a nonzero usage_count, we cannot use
-		 * it; discard it and retry.  (This can only happen if VACUUM put a
-		 * valid buffer in the freelist and then someone else used it before
-		 * we got to it.  It's probably impossible altogether as of 8.3, but
-		 * we'd better check anyway.)
-		 */
-		LockBufHdr(buf);
-		if (buf->refcount == 0 && buf->usage_count == 0)
-		{
-			if (strategy != NULL)
-				AddBufferToRing(strategy, buf);
-			return buf;
-		}
-		UnlockBufHdr(buf);
-	}
-
-	/* Nothing on the freelist, so run the "clock sweep" algorithm */
-	trycounter = NBuffers;
-	for (;;)
-	{
-		buf = &BufferDescriptors[StrategyControl->nextVictimBuffer];
-
-		if (++StrategyControl->nextVictimBuffer >= NBuffers)
-		{
-			StrategyControl->nextVictimBuffer = 0;
-			StrategyControl->completePasses++;
-		}
-
-		/*
-		 * If the buffer is pinned or has a nonzero usage_count, we cannot use
-		 * it; decrement the usage_count (unless pinned) and keep scanning.
-		 */
-		LockBufHdr(buf);
-		if (buf->refcount == 0)
-		{
-			if (buf->usage_count > 0)
-			{
-				buf->usage_count--;
-				trycounter = NBuffers;
-			}
-			else
-			{
-				/* Found a usable buffer */
-				if (strategy != NULL)
-					AddBufferToRing(strategy, buf);
-				return buf;
-			}
-		}
-		else if (--trycounter == 0)
-		{
-			/*
-			 * We've scanned all the buffers without making any state changes,
-			 * so all the buffers are pinned (or were when we looked at them).
-			 * We could hope that someone will free one eventually, but it's
-			 * probably better to fail than to risk getting stuck in an
-			 * infinite loop.
-			 */
-			UnlockBufHdr(buf);
-			elog(ERROR, "no unpinned buffers available");
-		}
-		UnlockBufHdr(buf);
+	buf = &BufferDescriptors[StrategyControl->firstFreeBuffer];
+	for (;;){
+	  LockBufHdr(buf);
+	  if (buf->refcount == 0)
+	    {
+	      fprintf(stderr, "You have found a buffer number %d - %d - %d...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
+	      /* ereport(LOG, */
+	      /* 	      (errcode(BUFF_FOUND), */
+	      /* 	       errmsg("You have found a buffer number %d - %d - %d...", buf->freePrevious, buf->buf_id, buf->freeNext)));	       */
+	      UnlockBufHdr(buf);
+	      return buf;
+	    }
+	  UnlockBufHdr(buf);
+	  if(buf->freeNext == FREENEXT_END_OF_LIST){
+	    /*
+	     * We've scanned all the buffers without making any state changes,
+	     * so all the buffers are pinned (or were when we looked at them).
+	     * We could hope that someone will free one eventually, but it's
+	     * probably better to fail than to risk getting stuck in an
+	     * infinite loop.
+	     */
+	    elog(ERROR, "no unpinned buffers available");
+	  }
+	  buf = &BufferDescriptors[buf->freeNext];
 	}
 
 	/* not reached */
 	return NULL;
 }
 
-/*
+/* MRH2
  * StrategyFreeBuffer: put a buffer on the freelist
  */
 void
 StrategyFreeBuffer(volatile BufferDesc *buf)
 {
+        volatile BufferDesc *left = NULL;
+	volatile BufferDesc *right = NULL;
+	volatile BufferDesc *old = NULL;
+
 	LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
+	
+	// LOCK
+	LockBufHdr(buf);
 
-	/*
-	 * It is possible that we are told to put something in the freelist that
-	 * is already in it; don't screw up the list if so.
-	 */
-	if (buf->freeNext == FREENEXT_NOT_IN_LIST)
-	{
-		buf->freeNext = StrategyControl->firstFreeBuffer;
-		if (buf->freeNext < 0)
-			StrategyControl->lastFreeBuffer = buf->buf_id;
-		StrategyControl->firstFreeBuffer = buf->buf_id;
+	//if last pin removed
+	if (buf->refcount == 0){
+	  fprintf(stderr, "Marking %d - %d - %d as MRU buf...\n", buf->freePrevious, buf->buf_id, buf->freeNext);
+	      /* ereport(LOG, */
+	      /* 	      (errcode(BUFF_FOUND), */
+	      /* 	       errmsg("Marking %d - %d - %d as MRU buf...", buf->freePrevious, buf->buf_id, buf->freeNext)));	       */
+
+
+	  // no need to bring to front if already there
+	  if( buf->freePrevious != FREENEXT_END_OF_LIST ){
+	    
+	    // Update left neighbor's next
+	    left = &BufferDescriptors[buf->freePrevious];
+	    left->freeNext = buf->freeNext;
+
+	    // Update right neighbor's previous if it exists
+	    if (buf->freeNext != FREENEXT_END_OF_LIST){
+	      right = &BufferDescriptors[buf->freeNext];
+	      right->freePrevious = buf->freePrevious;
+	    }
+	   
+	    // update old first's previous	    
+	    old = &BufferDescriptors[StrategyControl->firstFreeBuffer];
+	    old->freePrevious = buf->buf_id;
+	    
+	    // update new first's next
+	    buf->freeNext = old->buf_id;
+	    
+	    // update new first's previous
+	    buf->freePrevious = FREENEXT_END_OF_LIST;
+
+	    // update StrategyControl first pointer
+	    StrategyControl->firstFreeBuffer = buf->buf_id;
+
+	    //update StrategyControl next victim
+	    StrategyControl->nextVictimBuffer = buf->buf_id;
+
+	  }
 	}
-
+	UnlockBufHdr(buf);	
 	LWLockRelease(BufFreelistLock);
 }
 
