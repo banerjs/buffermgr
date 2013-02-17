@@ -117,7 +117,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 
         // Force the usage of CLOCK. There should be no memory leaks with this
         // method. strategy is passed by value.
-        strategy = NULL;
+        //strategy = NULL;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
